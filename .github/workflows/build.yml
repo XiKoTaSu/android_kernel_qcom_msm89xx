@@ -40,11 +40,11 @@ jobs:
           echo "BUILD_TIME=$(TZ=Asia/Shanghai date '+%Y%m%d%H%M')" >> $GITHUB_ENV
 
       - name: Install GCC cross-compiler from apt
-       run: |
-         sudo apt-get update
-         sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
-         # 工具链路径自动在 /usr/bin/aarch64-linux-gnu-*
-         echo "GCC_PATH=/usr" >> $GITHUB_ENV   # 实际 bin 目录在 /usr/bin
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          # 工具链路径自动在 /usr/bin/aarch64-linux-gnu-*
+          echo "GCC_PATH=/usr" >> $GITHUB_ENV   # 实际 bin 目录在 /usr/bin
 
       - name: Get Kernel source
         run: |
