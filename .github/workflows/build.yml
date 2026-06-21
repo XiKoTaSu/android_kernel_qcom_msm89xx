@@ -1,0 +1,95 @@
+name: Build-Kernel-with-NDK-Clang
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: "LA.UM.9.6.4.r1-04300-89xx.QSSI13.0"
+
+jobs:
+  build:
+    name: Build Kernel by ${{ github.actor }}
+    runs-on: ubuntu-22.04
+    steps:
+
+      - name: Get branch names.
+        id: branch-names
+        uses: tj-actions/branch-names@v8
+
+      - name: Set SWAP to 5GiB
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 5
+
+      - name: Initialize compilation environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git automake flex lzop bison gperf build-essential zip curl zlib1g-dev \
+            g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev \
+            squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven \
+            libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl \
+            libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev \
+            libgl1-mesa-dev xsltproc unzip device-tree-compiler python2 python3 \
+            libelf-dev
+          mkdir -p $GITHUB_WORKSPACE/workdir
+          cd $GITHUB_WORKSPACE/workdir
+          echo "BUILD_TIME=$(TZ=Asia/Shanghai date '+%Y%m%d%H%M')" >> $GITHUB_ENV
+
+      - name: Download and extract NDK r29
+        run: |
+          cd $GITHUB_WORKSPACE/workdir
+          wget -q --show-progress https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q android-ndk-r29-linux.zip
+          echo "NDK_PATH=$GITHUB_WORKSPACE/workdir/android-ndk-r29" >> $GITHUB_ENV
+
+      - name: Get Kernel source
+        run: |
+          git clone --recursive https://github.com/$GITHUB_REPOSITORY/ \
+                    -b ${{ steps.branch-names.outputs.current_branch }} --depth 1 \
+                    $GITHUB_WORKSPACE/workdir/source
+
+      - name: Build Kernel with NDK Clang + LLD
+        run: |
+          export KBUILD_BUILD_HOST=Github-Action
+          export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
+          export ARCH="arm64"
+          export SUBARCH="arm64"
+
+          # NDK r29 中 LLVM 预编译目录
+          export TOOLCHAIN_DIR="${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64"
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+
+          # ========== 关键的环境变量（解决兼容性） ==========
+          # 显式指定各个工具，防止 Makefile 回退到系统 GCC
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export READELF=llvm-readelf
+          export STRIP=llvm-strip
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+
+          # 告诉 Clang 目标平台的三元组（Android arm64 常用 aarch64-linux-android 或 aarch64-linux-gnu）
+          # export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          # 有些旧内核 Makefile 仍然检查 CROSS_COMPILE，设为空可避免警告
+          export CROSS_COMPILE=
+
+          # 验证工具链版本
+          clang --version
+          ld.lld --version
+
+          cd $GITHUB_WORKSPACE/workdir/source
+
+          # 编译（LLVM=1 依然开启，配合上面环境变量双重保险）
+          make LLVM=1 O=out vendor/msm8937-perf_defconfig
+          make -j$(nproc --all) LLVM=1 O=out
+
+      - name: Upload Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel
+          path: workdir/source/out/arch/arm64/boot/Image.gz-dtb
