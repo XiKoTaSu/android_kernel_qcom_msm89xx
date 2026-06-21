@@ -1,4 +1,4 @@
-name: Build-Kernel-with-GCC
+name: Build-Kernel-with-NDK-Clang
 on:
   workflow_call:
   workflow_dispatch:
@@ -31,22 +31,17 @@ jobs:
             libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev \
             libgl1-mesa-dev xsltproc unzip device-tree-compiler python2 python3 \
             libelf-dev
-
-          # 强制将 python 链接到 python2（修复 gcc-wrapper.py 的 Python 2 语法）
-          sudo ln -sf /usr/bin/python2 /usr/bin/python
-
           mkdir -p $GITHUB_WORKSPACE/workdir
           cd $GITHUB_WORKSPACE/workdir
           echo "BUILD_TIME=$(TZ=Asia/Shanghai date '+%Y%m%d%H%M')" >> $GITHUB_ENV
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-      - name: Download and extract GCC toolchain (Linaro aarch64)
+      - name: Download and extract NDK r29
         run: |
           cd $GITHUB_WORKSPACE/workdir
-          # 使用 Linaro GCC 7.5（稳定且兼容老内核）
-          wget -q --show-progress \
-            https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
-          tar -xf gcc-linaro-*.tar.xz
-          echo "GCC_PATH=$GITHUB_WORKSPACE/workdir/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu" >> $GITHUB_ENV
+          wget -q --show-progress https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q android-ndk-r29-linux.zip
+          echo "NDK_PATH=$GITHUB_WORKSPACE/workdir/android-ndk-r29" >> $GITHUB_ENV
 
       - name: Get Kernel source
         run: |
@@ -54,28 +49,45 @@ jobs:
                     -b ${{ steps.branch-names.outputs.current_branch }} --depth 1 \
                     $GITHUB_WORKSPACE/workdir/source
 
-      - name: Build Kernel with GCC
+      - name: Build Kernel with NDK Clang + LLD
         run: |
           export KBUILD_BUILD_HOST=Github-Action
           export KBUILD_BUILD_USER=$(echo ${{ github.actor }} | tr A-Z a-z)
           export ARCH="arm64"
           export SUBARCH="arm64"
 
-          # GCC 工具链路径
-          export CROSS_COMPILE="${{ env.GCC_PATH }}/bin/aarch64-linux-gnu-"
-          export PATH="${{ env.GCC_PATH }}/bin:$PATH"
+          # NDK r29 中 LLVM 预编译目录
+          export TOOLCHAIN_DIR="${{ env.NDK_PATH }}/toolchains/llvm/prebuilt/linux-x86_64"
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
 
-          # 验证工具链
-          ${CROSS_COMPILE}gcc --version
+          # ========== 关键的环境变量（解决兼容性） ==========
+          # 显式指定各个工具，防止 Makefile 回退到系统 GCC
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export READELF=llvm-readelf
+          export STRIP=llvm-strip
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+
+          # 告诉 Clang 目标平台的三元组（Android arm64 常用 aarch64-linux-android 或 aarch64-linux-gnu）
+          # export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          # 有些旧内核 Makefile 仍然检查 CROSS_COMPILE，设为空可避免警告
+          export CROSS_COMPILE=
+
+          # 验证工具链版本
+          clang --version
+          ld.lld --version
 
           cd $GITHUB_WORKSPACE/workdir/source
 
-          # 清理之前的编译产物（如果有）
-          rm -rf out
-
-          # 配置并编译（不需要 LLVM=1，也不需要设置 CC/LD 等）
-          make O=out vendor/msm8937-perf_defconfig
-          make -j$(nproc --all) O=out
+          # 编译（LLVM=1 依然开启，配合上面环境变量双重保险）
+          make LLVM=1 O=out vendor/msm8937-perf_defconfig
+          make -j$(nproc --all) LLVM=1 O=out
 
       - name: Upload Kernel
         uses: actions/upload-artifact@v4
